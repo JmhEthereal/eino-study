@@ -4,11 +4,22 @@ import (
 	"context"
 	"fmt"
 	"github.com/cloudwego/eino-ext/components/model/ark"
+	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/joho/godotenv"
 	"os"
 )
+
+type State struct {
+	History map[string]any
+}
+
+func genFunc(ctx context.Context) *State {
+	return &State{
+		History: make(map[string]any),
+	}
+}
 
 func main() {
 	err := godotenv.Load(".env")
@@ -16,8 +27,14 @@ func main() {
 		panic(err)
 	}
 	ctx := context.Background()
-	g := compose.NewGraph[map[string]string, *schema.Message]()
+	g := compose.NewGraph[map[string]string, *schema.Message](
+		compose.WithGenLocalState(genFunc))
 	lambda := compose.InvokableLambda(func(ctx context.Context, input map[string]string) (output map[string]string, err error) {
+		_ = compose.ProcessState[*State](ctx, func(_ context.Context, state *State) error {
+			state.History["tsundere_action"] = "我喜欢你"
+			state.History["cute_action"] = "摸摸头"
+			return nil
+		})
 		if input["role"] == "tsundere" {
 			return map[string]string{"role": "傲娇的", "content": input["content"]}, nil
 		} else if input["role"] == "cute" {
@@ -26,6 +43,10 @@ func main() {
 		return map[string]string{"role": input["role"], "content": input["content"]}, nil
 	})
 	TsundereLambda := compose.InvokableLambda(func(ctx context.Context, input map[string]string) (output []*schema.Message, err error) {
+		_ = compose.ProcessState[*State](ctx, func(_ context.Context, state *State) error {
+			input["content"] = input["content"] + state.History["tsundere_action"].(string)
+			return nil
+		})
 		return []*schema.Message{
 			{
 				Role:    schema.System,
@@ -56,6 +77,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	cutePreHandler := func(ctx context.Context, input map[string]string, state *State) (map[string]string, error) {
+		input["content"] = input["content"] + state.History["cute_action"].(string)
+		return input, nil
+	}
 	//注册节点
 	err = g.AddLambdaNode("lambda", lambda)
 	if err != nil {
@@ -65,7 +90,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = g.AddLambdaNode("cute", CuteLambda)
+	err = g.AddLambdaNode("cute", CuteLambda, compose.WithStatePreHandler(cutePreHandler))
 	if err != nil {
 		panic(err)
 	}
@@ -106,9 +131,20 @@ func main() {
 		panic(err)
 	}
 	//执行
-	answer, err := r.Invoke(ctx, map[string]string{"role": "cute", "content": "你好啊"})
+	answer, err := r.Invoke(ctx, map[string]string{"role": "cute", "content": "你好啊"}, compose.WithCallbacks(getCallBack()))
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println(answer.Content)
+}
+
+func getCallBack() callbacks.Handler {
+	handler := callbacks.NewHandlerBuilder().OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+		fmt.Printf("当前%s节点输入:%s\n", info.Component, input)
+		return ctx
+	}).OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+		fmt.Printf("当前%s节点输出:%s\n", info.Component, output)
+		return ctx
+	}).Build()
+	return handler
 }
